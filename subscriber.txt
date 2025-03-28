@@ -1,73 +1,101 @@
+#include <mosquitto.h>
 #include <iostream>
 #include <cstring>
-#include <cstdlib>
-#include <mqtt/async_client.h>
 
-// MQTT Broker Settings
-const std::string MQTT_BROKER_ADDRESS("tcp://broker.hivemq.com:1883");
-const std::string MQTT_CLIENT_ID("raspi_gas_subscriber");
-const std::string MQTT_TOPIC("gas_sensor/data");
-const int QOS = 1;
-
-// Callback for when a message arrives
-class callback : public virtual mqtt::callback {
-public:
-    void message_arrived(mqtt::const_message_ptr msg) override {
-        std::cout << "Gas Sensor Data Received: " << msg->get_payload_str() 
-                  << " (Topic: " << msg->get_topic() << ")" << std::endl;
+// Callback function for successful connection
+void on_connect(struct mosquitto *mosq, void *obj, int result) {
+    if (result == 0) {
+        std::cout << "Connected to MQTT broker successfully." << std::endl;
         
-        // Here you could add code to display on an LCD screen
-        // For example: lcd_display(msg->get_payload_str());
+        // Subscribe to a topic
+        const char* topic = "your/topic/here";
+        mosquitto_subscribe(mosq, nullptr, topic, 0);
+        std::cout << "Subscribed to topic: " << topic << std::endl;
+    } else {
+        std::cerr << "Connection failed. Error code: " << result << std::endl;
     }
+}
 
-    // Optional: Add LCD display function
-    /*
-    void lcd_display(const std::string& message) {
-        // Implement your LCD display logic here
-        // This would be specific to your LCD hardware
+// Callback function for received message
+void on_message(struct mosquitto *mosq, void *obj, 
+                const struct mosquitto_message *message) {
+    if (message->payloadlen) {
+        std::cout << "Received message:" << std::endl;
+        std::cout << "  Topic: " << message->topic << std::endl;
+        std::cout << "  Message: ";
+        
+        // Convert payload to string (assuming text payload)
+        char* payload = new char[message->payloadlen + 1];
+        memcpy(payload, message->payload, message->payloadlen);
+        payload[message->payloadlen] = '\0';
+        
+        std::cout << payload << std::endl;
+        
+        delete[] payload;
     }
-    */
-};
+}
 
-int main(int argc, char* argv[]) {
-    try {
-        // Create an MQTT client
-        mqtt::async_client client(MQTT_BROKER_ADDRESS, MQTT_CLIENT_ID);
-        
-        // Set up callback
-        callback cb;
-        client.set_callback(cb);
-        
-        // Connect options
-        mqtt::connect_options connOpts;
-        connOpts.set_keep_alive_interval(20);
-        connOpts.set_clean_session(true);
-        
-        // Connect to the broker
-        std::cout << "Connecting to MQTT broker..." << std::endl;
-        mqtt::token_ptr conntok = client.connect(connOpts);
-        conntok->wait();
-        std::cout << "Connected!" << std::endl;
-        
-        // Subscribe to the topic
-        client.subscribe(MQTT_TOPIC, QOS);
-        std::cout << "Subscribed to topic: " << MQTT_TOPIC << std::endl;
-        
-        // Keep the program running to receive messages
-        while (true) {
-            // You could add other processing here
-            // For a simple subscriber, we just sleep
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-        
-        // Disconnect (though we may never reach here)
-        client.disconnect()->wait();
-        std::cout << "Disconnected" << std::endl;
-    }
-    catch (const mqtt::exception& exc) {
-        std::cerr << "Error: " << exc.what() << std::endl;
+// Error callback function
+void on_error(struct mosquitto *mosq, void *obj, int err) {
+    std::cerr << "MQTT Error: " << mosquitto_strerror(err) << std::endl;
+}
+
+int main() {
+    // Initialize Mosquitto library
+    mosquitto_lib_init();
+
+    // Create a new mosquitto client
+    struct mosquitto *mosq = mosquitto_new(
+        nullptr,  // client ID (nullptr for random ID)
+        true,     // clean session flag
+        nullptr   // user data
+    );
+
+    if (!mosq) {
+        std::cerr << "Failed to create Mosquitto client" << std::endl;
         return 1;
     }
-    
+
+    // Set callback functions
+    mosquitto_connect_callback_set(mosq, on_connect);
+    mosquitto_message_callback_set(mosq, on_message);
+    mosquitto_error_callback_set(mosq, on_error);
+
+    // Broker connection parameters
+    const char* host = "localhost";  // MQTT broker address
+    int port = 1883;                 // Default MQTT port
+    int keepalive = 60;              // Keep alive interval in seconds
+
+    // Connect to the broker
+    int rc = mosquitto_connect(mosq, host, port, keepalive);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        std::cerr << "Connection failed: " 
+                  << mosquitto_strerror(rc) << std::endl;
+        mosquitto_destroy(mosq);
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+
+    // Start the network loop
+    rc = mosquitto_loop_start(mosq);
+    if (rc != MOSQ_ERR_SUCCESS) {
+        std::cerr << "Failed to start loop: " 
+                  << mosquitto_strerror(rc) << std::endl;
+        mosquitto_destroy(mosq);
+        mosquitto_lib_cleanup();
+        return 1;
+    }
+
+    // Keep the main thread running
+    std::cout << "Waiting for messages. Press Ctrl+C to exit." << std::endl;
+    while (true) {
+        // You can add additional logic here if needed
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    // Cleanup (this part is technically unreachable with the infinite loop)
+    mosquitto_destroy(mosq);
+    mosquitto_lib_cleanup();
+
     return 0;
 }
